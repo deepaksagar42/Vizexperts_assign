@@ -1,0 +1,18 @@
+# node
+node_modules/
+
+# runtime uploads
+uploads/
+*.zip
+*.bin
+*.txt
+
+# env
+.env
+
+# build
+dist/
+build/
+
+# OS
+.DS_Store
