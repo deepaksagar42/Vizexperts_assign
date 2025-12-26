@@ -86,4 +86,5 @@ A resumable, concurrent, chunk-based ZIP file uploader built with React + Node.j
   ```
    http://localhost:3000
    ```
- 
+ ### Demo video
+ https://youtu.be/Avuzjq_tRUc
