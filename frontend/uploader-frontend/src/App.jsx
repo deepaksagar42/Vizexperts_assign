@@ -11,135 +11,189 @@ export default function App() {
   const [eta, setEta] = useState("");
   const [result, setResult] = useState(null);
 
+  const pausedRef = useRef(false);
   const runningRef = useRef(false);
+  const uploadedRef = useRef(new Set());
 
-  const startUpload = async () => {
-    setResult(null);
+  const [paused, setPaused] = useState(false);
 
-    if (runningRef.current) return;
-    runningRef.current = true;
+  const startUpload = async (mode = "upload") => {
+    console.log("▶️ startUpload called | mode =", mode);
 
-    if (!file) {
-      runningRef.current = false;
+    if (runningRef.current) {
+      console.log("⛔ already running, ignoring");
       return;
     }
+    if (!file) return;
+
+    // Reset memory only if it's a completely new upload, not a resume
+    if (mode === "upload") {
+      uploadedRef.current = new Set();
+      setResult(null);
+      setProgress(0);
+    }
+
+    pausedRef.current = false;
+    setPaused(false);
+    runningRef.current = true;
 
     try {
-      setProgress(0);
-      setSpeed(0);
-      setEta("");
-      setChunks([]);
-
+      console.log("📡 calling initUpload()");
       const init = await initUpload(file);
 
-      const uploaded = new Set(init.uploadedChunks);
+      console.log("🗄 DB uploadedChunks:", init.uploadedChunks);
+
+      // 🔥 Sync DB state into local memory
+      init.uploadedChunks.forEach((i) => uploadedRef.current.add(i));
+
+      console.log("🧠 memory uploadedChunks:", [...uploadedRef.current]);
+
+      const uploaded = uploadedRef.current;
+
+      // 🔥 Build UI grid and update progress immediately
       setChunks(
         Array.from({ length: init.totalChunks }, (_, i) =>
           uploaded.has(i) ? "success" : "pending"
         )
       );
+      setProgress(Math.floor((uploaded.size / init.totalChunks) * 100));
 
+      // Upload missing chunks
       await uploadFile({
         file,
         uploadId: init.uploadId,
         uploadedChunks: uploaded,
-        onChunkUpdate: (i, status) =>
-          setChunks((c) => {
-            const n = [...c];
-            n[i] = status;
-            return n;
-          }),
-        onProgress: (done, total) =>
-          setProgress(Math.floor((done / total) * 100)),
+        pausedRef,
+
+        onChunkUpdate: (i, status) => {
+          if (status === "success") uploaded.add(i);
+
+          setChunks((prev) => {
+            const next = [...prev];
+            next[i] = status;
+            return next;
+          });
+        },
+
+        onProgress: (done, total) => {
+          console.log(`📊 progress ${done}/${total}`);
+          setProgress(Math.floor((done / total) * 100));
+        },
+
         onSpeed: (s, done, total) => {
           setSpeed(Number(s).toFixed(2));
           const remaining = total - done;
           if (s > 0) setEta(((remaining * 5) / s).toFixed(1));
-        }
+        },
       });
 
-      const res = await finalizeUpload(init.uploadId);
-      console.log("Finalize result:", res);
+      console.log("✅ uploadFile resolved");
 
-      if (
-        res?.status === "completed" ||
-        res?.status === "already_completed"
-      ) {
-        setResult({
-          status: res.status,
-          hash: res.hash,
-          zipEntries: res.zipEntries
-        });
+      // Only finalize if we finished the file (wasn't paused)
+      if (!pausedRef.current) {
+        const res = await finalizeUpload(init.uploadId);
+        console.log("📦 finalize response:", res);
+
+        if (res?.status === "completed" || res?.status === "already_completed") {
+          setResult(res);
+        }
       }
     } finally {
       runningRef.current = false;
+      console.log("🏁 upload cycle ended");
     }
   };
 
   return (
-  <div className="container">
-    <h2>Resumable ZIP Upload</h2>
+    <div className="container">
+      <h2>Resumable ZIP Upload</h2>
 
-    <div className="upload-row">
-      <input
-        type="file"
-        onChange={(e) => setFile(e.target.files[0])}
-      />
-      <button
-        onClick={startUpload}
-        disabled={!file || runningRef.current}
-      >
-        Upload
-      </button>
-    </div>
+      <div className="upload-row">
+        <input
+          type="file"
+          onChange={(e) => {
+            setFile(e.target.files[0]);
+            setChunks([]);
+            setResult(null);
+            setProgress(0);
+            uploadedRef.current = new Set();
+          }}
+        />
 
-    <progress value={progress} max="100" />
-    <p>{progress}%</p>
+        <button
+          onClick={() => startUpload("upload")}
+          disabled={!file || runningRef.current}
+        >
+          Upload
+        </button>
 
-    <div className="metrics">
-      <p>Speed: {speed} MB/s</p>
-      <p>ETA: {eta || "-"} s</p>
-    </div>
+        <button
+          onClick={() => startUpload("resume")}
+          disabled={!file || runningRef.current || !paused}
+        >
+          Resume
+        </button>
 
-    {chunks.length > 0 && <h4>Chunk Upload Status</h4>}
-
-    <div className="grid">
-      {chunks.map((s, i) => (
-        <div key={i} className={`chunk ${s}`}>
-          {i}
-        </div>
-      ))}
-    </div>
-
-    {/* ✅ RESULT SECTION */}
-    {
-    result && (
-      <div className="result-box">
-        <h3>Upload Result</h3>
-
-        <p>
-          <strong>Status:</strong>{" "}
-          <span className={`status-badge ${result.status}`}>
-            {result.status.replace("_", " ")}
-          </span>
-        </p>
-
-        <p>
-          <strong>SHA-256 Hash:</strong>
-          <code>{result.hash}</code>
-        </p>
-
-        <p><strong>Files inside ZIP:</strong></p>
-        <ul>
-          {result.zipEntries.map((f, i) => (
-            <li key={i}>
-              <code>{f}</code>
-              </li>
-          ))}
-        </ul>
+        <button
+          onClick={() => {
+            console.log("⏸ pause clicked");
+            pausedRef.current = true;
+            setPaused(true);
+            runningRef.current = false;
+          }}
+          disabled={!runningRef.current || paused}
+        >
+          Pause
+        </button>
       </div>
-    )}
-  </div>
-);
 
+      <progress value={progress} max="100" />
+      <p>{progress}%</p>
+
+      <div className="metrics">
+        <p>Speed: {speed} MB/s</p>
+        <p>ETA: {eta || "-"} s</p>
+      </div>
+
+      {chunks.length > 0 && <h4>Chunk Upload Status</h4>}
+
+      <div className="grid">
+        {chunks.map((s, i) => (
+          <div key={i} className={`chunk ${s}`}>
+            {i}
+          </div>
+        ))}
+      </div>
+
+      {/* RESTORED: Your original result box code below */}
+      {result && (
+        <div className="result-box">
+          <h3>Upload Result</h3>
+
+          <p>
+            <strong>Status:</strong>{" "}
+            <span className={`status-badge ${result.status}`}>
+              {result.status.replace("_", " ")}
+            </span>
+          </p>
+
+          <p>
+            <strong>SHA-256 Hash:</strong>
+            <code>{result.hash}</code>
+          </p>
+
+          <p>
+            <strong>Files inside ZIP:</strong>
+          </p>
+          <ul>
+            {result.zipEntries.map((f, i) => (
+              <li key={i}>
+                <code>{f}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
 }
